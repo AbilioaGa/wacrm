@@ -298,7 +298,8 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
           // inserts that need it for NOT NULL FK compliance. Always
           // the admin who saved the WhatsApp config.
           config.user_id,
-          decryptedAccessToken
+          decryptedAccessToken,
+          phoneNumberId
         )
       }
     }
@@ -558,18 +559,17 @@ async function handleReaction(
 async function processMessage(
   message: WhatsAppMessage,
   contact: { profile: { name: string }; wa_id: string },
-  // Tenancy. Resolved from the matched whatsapp_config row; every
-  // contact / conversation / message row created downstream is
-  // stamped with this so any member of the account can see it.
   accountId: string,
-  // Sender-of-record for inserts that need a NOT NULL user_id FK
-  // (contacts, conversations). Always the admin who saved the
-  // WhatsApp config; the choice is arbitrary post-017 but stable.
   configOwnerUserId: string,
-  accessToken: string
+  accessToken: string,
+  phoneNumberId: string
 ) {
-  const senderPhone = normalizePhone(message.from)
-  const contactName = contact.profile.name
+  // Detect outbound echo: when `from` matches our phone_number_id, the
+  // message was sent by us (e.g. via n8n). Use the recipient (wa_id) as
+  // the contact so it appears in the customer's conversation.
+  const isEcho = message.from === phoneNumberId
+  const senderPhone = normalizePhone(isEcho ? contact.wa_id : message.from)
+  const contactName = isEcho ? 'Você' : contact.profile.name
 
   // Find or create contact
   const contactOutcome = await findOrCreateContact(
@@ -724,6 +724,10 @@ async function processMessage(
   // no active flows take the runner's early-exit "no_match" path
   // basically for free (one indexed SELECT for the active run).
   // ============================================================
+
+  // Echo messages (sent by us via API) don't trigger automations or flows
+  if (isEcho) return
+
   const flowResult = await dispatchInboundToFlows({
     accountId,
     userId: configOwnerUserId,
